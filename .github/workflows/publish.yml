@@ -1,0 +1,40 @@
+name: publish-release
+
+# The private TESSO pipeline pushes branch incoming/v<version> containing exactly:
+#   TESSO_<version>_x64-setup.exe, TESSO_<version>_x64-setup.exe.sig, latest.json
+# This turns it into a GitHub Release (marked latest) and deletes the branch.
+on:
+  push:
+    branches: ["incoming/**"]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate payload
+        id: v
+        run: |
+          VERSION=$(jq -r .version latest.json)
+          TAG="v$VERSION"
+          [ "refs/heads/incoming/$TAG" = "$GITHUB_REF" ] || { echo "::error::branch does not match latest.json version"; exit 1; }
+          EXE="TESSO_${VERSION}_x64-setup.exe"
+          test -f "$EXE" && test -f "$EXE.sig"
+          URL=$(jq -r '.platforms["windows-x86_64"].url' latest.json)
+          [ "$URL" = "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$EXE" ] || { echo "::error::unexpected url $URL"; exit 1; }
+          [ "$(jq -r '.platforms["windows-x86_64"].signature' latest.json)" = "$(cat "$EXE.sig")" ]
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"; echo "exe=$EXE" >> "$GITHUB_OUTPUT"
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES=$(jq -r '.notes // ""' latest.json)
+          gh release create "${{ steps.v.outputs.tag }}" "${{ steps.v.outputs.exe }}" "${{ steps.v.outputs.exe }}.sig" latest.json \
+            -R "$GITHUB_REPOSITORY" --target main --title "TESSO ${{ steps.v.outputs.tag }}" --notes "${NOTES:-TESSO para Windows}" --latest
+      - name: Delete incoming branch
+        if: always()
+        run: git push origin --delete "${GITHUB_REF#refs/heads/}"
